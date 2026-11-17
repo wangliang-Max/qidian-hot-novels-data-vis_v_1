@@ -1,69 +1,111 @@
-import pandas as pd
+# -*- coding: utf-8 -*-
+"""榜单数据可视化脚本
+
+基于清洗后的数据集生成 5 张统计图表（默认输出到当前目录）：
+    01_分类数量分布.png   各分类上榜小说数量柱状图
+    02_TOP15热度排名.png  榜单前 15 名条形图（排名越小越靠前）
+    03_字数分布.png       上榜小说字数（万字）分布直方图
+    04_分类占比饼图.png   各分类占比
+    05_分类平均字数.png   各分类上榜作品的平均字数（新增：反映分类的篇幅特征）
+
+用法：python data_visualization.py --input clean_data.csv --outdir . --topn 15
+"""
+import argparse
+import os
+
+import matplotlib
 import matplotlib.pyplot as plt
+import pandas as pd
+from matplotlib import font_manager
 
-# 解决matplotlib中文乱码
-plt.rcParams["font.sans-serif"] = ["SimHei"]
-plt.rcParams["axes.unicode_minus"] = False
+# 中文字体候选：Windows / macOS / Linux 各取一个，避免换机器就出现方块
+CANDIDATES = ["Microsoft YaHei", "SimHei", "PingFang SC", "Noto Sans CJK SC", "WenQuanYi Micro Hei"]
 
-# 1. 读取数据 - 修正为阅读榜的文件名
-df = pd.read_csv("qidian_readindex_books.csv", encoding="utf-8-sig")
 
-# 2. 数据清洗
-# 清洗字数字段：去掉"万字"，转换为数值
-df["字数(万)"] = df["字数"].str.replace("万字", "").astype(float)
+def setup_font():
+    """从系统已安装字体里挑选第一个可用的中文字体。"""
+    installed = {f.name for f in font_manager.fontManager.ttflist}
+    for name in CANDIDATES:
+        if name in installed:
+            matplotlib.rcParams["font.sans-serif"] = [name]
+            print(f"使用中文字体：{name}")
+            break
+    else:
+        print("警告：未找到中文字体，图表中的中文可能显示为方块")
+    matplotlib.rcParams["axes.unicode_minus"] = False
 
-# 打印数据概览
-print("数据基本信息：")
-print(df.info())
-print("\n数据前5行预览：")
-print(df.head())
 
-# 3. 图表1：小说分类数量分布柱状图
-plt.figure(figsize=(10, 6))
-category_count = df["分类"].value_counts().sort_values(ascending=False)
-plt.bar(category_count.index, category_count.values, color="#4A90E2")
-plt.title("起点阅读榜小说分类数量分布", fontsize=14)
-plt.xlabel("小说分类", fontsize=12)
-plt.ylabel("数量（本）", fontsize=12)
-plt.xticks(rotation=45)
-plt.tight_layout()
-plt.savefig("01_分类数量分布.png", dpi=300)
-plt.show()
+def save(fig, outdir, name):
+    path = os.path.join(outdir, name)
+    fig.savefig(path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"已保存 {path}")
 
-# 4. 图表2：TOP15小说排名条形图
-plt.figure(figsize=(10, 7))
-top15 = df.head(15).sort_values("排名", ascending=False)
-plt.barh(top15["小说名称"], top15["排名"], color="#FF6B6B")
-plt.title("起点阅读榜TOP15小说", fontsize=14)
-plt.xlabel("排名（数字越小排名越高）", fontsize=12)
-plt.gca().invert_xaxis()
-plt.tight_layout()
-plt.savefig("02_TOP15热度排名.png", dpi=300)
-plt.show()
 
-# 5. 图表3：小说字数分布直方图
-plt.figure(figsize=(10, 6))
-plt.hist(df["字数(万)"], bins=10, color="#50C878", edgecolor="black", alpha=0.7)
-plt.title("起点阅读榜小说字数分布", fontsize=14)
-plt.xlabel("字数（万字）", fontsize=12)
-plt.ylabel("小说数量（本）", fontsize=12)
-plt.grid(axis="y", linestyle="--", alpha=0.5)
-plt.tight_layout()
-plt.savefig("03_字数分布.png", dpi=300)
-plt.show()
+def main():
+    parser = argparse.ArgumentParser(description="起点榜单一键出图")
+    parser.add_argument("--input", default="clean_data.csv")
+    parser.add_argument("--outdir", default=".")
+    parser.add_argument("--topn", type=int, default=15)
+    args = parser.parse_args()
 
-# 6. 图表4：小说分类占比饼图
-plt.figure(figsize=(9, 9))
-plt.pie(
-    category_count.values,
-    labels=category_count.index,
-    autopct="%1.1f%%",
-    startangle=90,
-    colors=plt.cm.Set3.colors
-)
-plt.title("起点阅读榜小说分类占比", fontsize=14)
-plt.tight_layout()
-plt.savefig("04_分类占比饼图.png", dpi=300)
-plt.show()
+    setup_font()
+    os.makedirs(args.outdir, exist_ok=True)
+    df = pd.read_csv(args.input, encoding="utf-8-sig")
 
-print("\n所有图表已生成并保存！")
+    cat_count = df["分类"].value_counts()
+    words = df["字数(万)"].dropna()
+
+    # 图 1：分类数量分布
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.bar(cat_count.index, cat_count.values, color="#4A90E2")
+    ax.set_title(f"起点阅读榜小说分类数量分布（共 {len(df)} 本）", fontsize=14)
+    ax.set_xlabel("小说分类")
+    ax.set_ylabel("数量（本）")
+    ax.tick_params(axis="x", rotation=45)
+    for x, y in zip(cat_count.index, cat_count.values):
+        ax.text(x, y + 0.2, str(y), ha="center", fontsize=10)
+    save(fig, args.outdir, "01_分类数量分布.png")
+
+    # 图 2：TOP N 排名
+    top = df.nsmallest(args.topn, "排名").sort_values("排名", ascending=False)
+    fig, ax = plt.subplots(figsize=(10, 7))
+    ax.barh(top["小说名称"], top["排名"], color="#FF6B6B")
+    ax.set_title(f"起点阅读榜 TOP{args.topn} 小说", fontsize=14)
+    ax.set_xlabel("排名（数字越小排名越高）")
+    ax.invert_xaxis()
+    for y, x in zip(top["小说名称"], top["排名"]):
+        ax.text(x - 0.2, y, str(x), va="center", ha="right", fontsize=9)
+    save(fig, args.outdir, "02_TOP15热度排名.png")
+
+    # 图 3：字数分布
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.hist(words, bins=10, color="#50C878", edgecolor="black", alpha=0.75)
+    ax.set_title("起点阅读榜小说字数分布", fontsize=14)
+    ax.set_xlabel("字数（万字）")
+    ax.set_ylabel("小说数量（本）")
+    ax.grid(axis="y", linestyle="--", alpha=0.5)
+    save(fig, args.outdir, "03_字数分布.png")
+
+    # 图 4：分类占比
+    fig, ax = plt.subplots(figsize=(9, 9))
+    ax.pie(cat_count.values, labels=cat_count.index, autopct="%1.1f%%",
+           startangle=90, colors=plt.cm.Set3.colors)
+    ax.set_title("起点阅读榜小说分类占比", fontsize=14)
+    save(fig, args.outdir, "04_分类占比饼图.png")
+
+    # 图 5：各分类平均字数（新增维度：篇幅特征）
+    avg = df.groupby("分类")["字数(万)"].mean().sort_values(ascending=False)
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.bar(avg.index, avg.values, color="#7B68EE")
+    ax.set_title("各分类上榜作品平均字数", fontsize=14)
+    ax.set_xlabel("小说分类")
+    ax.set_ylabel("平均字数（万字）")
+    ax.tick_params(axis="x", rotation=45)
+    for x, y in zip(avg.index, avg.values):
+        ax.text(x, y + 1, f"{y:.0f}", ha="center", fontsize=9)
+    save(fig, args.outdir, "05_分类平均字数.png")
+
+
+if __name__ == "__main__":
+    main()
