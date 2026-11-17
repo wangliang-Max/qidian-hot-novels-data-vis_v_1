@@ -1,83 +1,140 @@
-import requests
+# -*- coding: utf-8 -*-
+"""起点中文网阅读榜（热搜榜）数据采集脚本
+
+功能说明
+--------
+1. 分页请求起点移动端的榜单 JSON 接口，逐页解析榜单小说信息；
+2. Cookie 从环境变量 ``QD_COOKIE`` 读取，不把个人凭据写死在代码里（可公开提交）；
+3. 单页请求失败自动重试（指数退避），页与页之间随机休眠，降低触发风控的概率；
+4. 结果按「书名 + 作者」去重后写入 CSV，编码 utf-8-sig，Excel 可直接打开。
+
+使用示例
+--------
+    # PowerShell 里先设置 Cookie（浏览器 F12 -> Network -> 任意请求 -> Cookie 复制）
+    $env:QD_COOKIE = "……"
+    python qidian_spider.py --start-page 1 --end-page 3 --out qidian_readindex_books.csv
+"""
+import argparse
 import csv
-import time
+import logging
+import os
 import random
 import re
+import time
 
-COOKIE = "hiijack=0; supportWebp=true; abPolicies=%7B%22g17%22%3A0%2C%22g16%22%3A0%2C%22g18%22%3A1%2C%22g19%22%3A0%2C%22g14%22%3A0%7D; supportwebp=true; newstatisticUUID=1791774872_697166665; fu=373437429; _csrfToken=7dea70d6-d522-451c-9cda-cf6e73fb961c; traffic_utm_referer=; Hm_lvt_f00f67093ce2f38f215010b699629083=1791774872; Hm_lpvt_f00f67093ce2f38f215010b699629083=1791774872; HMACCOUNT=687FD36B28E3F3B3; traffic_search_engine=; se_ref=; Hm_lvt_1d7d9ab48732e057a5e22e962e5797a6=1791775035; hiijack=0; Hm_lpvt_1d7d9ab48732e057a5e22e962e5797a6=1791775291"
+import requests
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Linux; Android 16; Pixel 10) AppleWebKit/537.36 (KHTML, like Gecko) Edg/155.0.0.0 Mobile Safari/537.36",
-    "Cookie": COOKIE,
+API_URL = "https://m.qidian.com/webcommon/rank/readIndexlist"
+FIELDS = ["排名", "小说名称", "作者", "分类", "子类", "字数", "简介"]
+
+BASE_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/122.0 Mobile Safari/537.36"
+    ),
     "Referer": "https://m.qidian.com/rank/readindex/",
-    "Accept": "application/json, text/plain, */*"
+    "Accept": "application/json, text/plain, */*",
 }
 
-def crawl_one_page(page_num):
-    # 从Cookie中自动提取csrfToken，避免手动复制出错
-    csrf_match = re.search(r"_csrfToken=([^;]+)", COOKIE)
-    csrf_token = csrf_match.group(1) if csrf_match else ""
+log = logging.getLogger("qidian")
 
-    # 修正：分页参数名必须是 pageNum
-    url = (
-        f"https://m.qidian.com/webcommon/rank/readIndexlist"
-        f"?gender=male"
-        f"&pageNum={page_num}"          # ← 关键修正：加上参数名 pageNum
-        f"&catId=-1"
-        f"&_csrfToken={csrf_token}"
-    )
 
-    try:
-        response = requests.get(url, headers=HEADERS, timeout=10)
-        response.raise_for_status()
-        res_data = response.json()
-    except Exception as e:
-        print(f"第{page_num}页请求失败：{e}")
-        return []
+def build_session(cookie):
+    """创建带 Cookie 的会话，并复用 TCP 连接。"""
+    session = requests.Session()
+    session.headers.update(BASE_HEADERS)
+    session.headers["Cookie"] = cookie
+    csrf = re.search(r"_csrfToken=([^;]+)", cookie)
+    session.csrf_token = csrf.group(1) if csrf else ""
+    return session
 
-    # 从接口结构提取小说列表
-    book_list = res_data.get("data", {}).get("records", [])
-    if not book_list:
-        print(f"第{page_num}页无小说数据")
-        return []
 
-    page_data = []
-    for book in book_list:
+def crawl_page(session, page_num, retries=3):
+    """抓取单页榜单，返回 [排名, 书名, 作者, 分类, 子类, 字数, 简介] 列表。"""
+    params = {
+        "gender": "male",
+        "pageNum": page_num,
+        "catId": "-1",
+        "_csrfToken": session.csrf_token,
+    }
+    for attempt in range(1, retries + 1):
         try:
-            rank = book.get("rankNum", 0)
-            book_name = book.get("bName", "未知")
-            author = book.get("bAuth", "未知")
-            category = book.get("cat", "未知")
-            sub_category = book.get("subCat", "")
-            word_count = book.get("cnt", "未知")
-            intro = book.get("desc", "无简介")
-
-            page_data.append([rank, book_name, author, category, sub_category, word_count, intro])
-        except Exception as e:
-            print(f"单条解析失败：{e}")
+            resp = session.get(API_URL, params=params, timeout=10)
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception as exc:  # 网络错误 / JSON 解析错误统一重试
+            wait = attempt * 2
+            log.warning("第 %s 页第 %s 次请求失败：%s，%s 秒后重试", page_num, attempt, exc, wait)
+            time.sleep(wait)
             continue
 
-    print(f"第{page_num}页爬取完成，获取{len(page_data)}本小说")
-    return page_data
+        records = (payload.get("data") or {}).get("records") or []
+        if not records:
+            log.warning("第 %s 页没有返回数据，可能已到榜单末尾或 Cookie 失效", page_num)
+            return []
 
-def save_to_csv(data, filename="qidian_readindex_books.csv"):
-    headers = ["排名", "小说名称", "作者", "分类", "子类", "字数", "简介"]
-    with open(filename, "w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(headers)
-        writer.writerows(data)
-    print(f"数据已保存到 {filename}")
+        rows = []
+        for book in records:
+            rows.append([
+                book.get("rankNum", 0),
+                book.get("bName", "未知"),
+                book.get("bAuth", "未知"),
+                book.get("cat", "未知"),
+                book.get("subCat", ""),
+                book.get("cnt", "未知"),
+                (book.get("desc") or "").replace("\n", " ").strip(),
+            ])
+        log.info("第 %s 页抓取成功：%s 条", page_num, len(rows))
+        return rows
+
+    log.error("第 %s 页重试 %s 次仍失败，跳过", page_num, retries)
+    return []
+
+
+def save_csv(rows, path):
+    """保存为 CSV，按「书名 + 作者」去重，保持榜单排名顺序。"""
+    seen, unique = set(), []
+    for row in rows:
+        key = (row[1], row[2])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(row)
+    with open(path, "w", encoding="utf-8-sig", newline="") as fp:
+        writer = csv.writer(fp)
+        writer.writerow(FIELDS)
+        writer.writerows(unique)
+    log.info("已保存 %s 条数据到 %s（去重 %s 条）", len(unique), path, len(rows) - len(unique))
+
 
 def main():
-    all_data = []
-    # 共510本，每页20条，爬前3页做演示（可按需改成 range(1, 26) 爬完整榜单）
-    for page in range(1, 4):
-        page_data = crawl_one_page(page)
-        all_data.extend(page_data)
-        time.sleep(random.uniform(2, 3))
+    parser = argparse.ArgumentParser(description="起点阅读榜爬虫")
+    parser.add_argument("--start-page", type=int, default=1, help="起始页码")
+    parser.add_argument("--end-page", type=int, default=3, help="结束页码（含）")
+    parser.add_argument("--out", default="qidian_readindex_books.csv", help="输出 CSV 路径")
+    parser.add_argument("--min-delay", type=float, default=2.0, help="翻页最小休眠秒数")
+    parser.add_argument("--max-delay", type=float, default=3.5, help="翻页最大休眠秒数")
+    args = parser.parse_args()
 
-    save_to_csv(all_data)
-    print(f"全部爬取完成，共获取{len(all_data)}条数据")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    cookie = os.environ.get("QD_COOKIE", "").strip()
+    if not cookie:
+        raise SystemExit("缺少 Cookie：请先设置环境变量 QD_COOKIE（见文件头部说明）")
+
+    session = build_session(cookie)
+    all_rows = []
+    for page in range(args.start_page, args.end_page + 1):
+        rows = crawl_page(session, page)
+        if not rows:
+            break
+        all_rows.extend(rows)
+        time.sleep(random.uniform(args.min_delay, args.max_delay))
+
+    if not all_rows:
+        raise SystemExit("没有抓到任何数据，请检查 Cookie 是否过期")
+    save_csv(all_rows, args.out)
+
 
 if __name__ == "__main__":
     main()
