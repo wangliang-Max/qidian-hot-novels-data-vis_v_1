@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---- 项目专用（IDE 与生成数据）----
+.idea/
+.vscode/
+clean_data.csv
+
