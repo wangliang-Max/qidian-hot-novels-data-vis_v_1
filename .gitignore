@@ -219,7 +219,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# ---- 项目专用（IDE 与生成数据）----
+# ---- 椤圭洰涓撶敤锛圛DE 涓庣敓鎴愭暟鎹級----
 .idea/
 .vscode/
 clean_data.csv
