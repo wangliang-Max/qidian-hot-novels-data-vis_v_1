@@ -6,6 +6,14 @@
 仓库自带一份 **60 条**榜单数据快照（`qidian_readindex_books.csv`），
 即使没有 Cookie，也能直接复现全部图表。
 
+## 效果预览
+
+![分类数量分布](qnv-python/01_分类数量分布.png)
+
+![各分类平均字数](qnv-python/05_分类平均字数.png)
+
+> 其余图表（TOP 排名、字数分布、占比饼图、作者榜、箱线图）见 `qnv-python/`。
+
 ## 目录结构
 
 ```text
