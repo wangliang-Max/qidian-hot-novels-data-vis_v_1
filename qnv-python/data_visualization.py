@@ -175,7 +175,10 @@ def main():
 
     # ---------------------------------------------------------------- 图 2
     # TOP N 排名：条形长度即名次，颜色越深名次越高
-    top = df.nsmallest(args.topn, "排名").sort_values("排名", ascending=False)
+    # 清洗时无名次的记录会被补成 0，这些记录不参与排名图
+    ranked = df[df["排名"] > 0]
+    base = ranked if not ranked.empty else df
+    top = base.nsmallest(args.topn, "排名").sort_values("排名", ascending=False)
     ranks = top["排名"].astype(int).tolist()
     lo, hi = min(ranks), max(ranks)
     span = max(hi - lo, 1)

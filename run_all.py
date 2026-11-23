@@ -25,6 +25,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PYDIR = os.path.join(HERE, "qnv-python")
+VERSION = "1.1.0"
 
 
 def run(script, args):
@@ -48,6 +49,7 @@ def main():
     parser.add_argument("--dpi", type=int, default=300, help="图片分辨率")
     parser.add_argument("--append", action="store_true", help="采集时在已有 CSV 上续爬")
     parser.add_argument("--skip-crawl", action="store_true", help="跳过采集，只用已有 CSV")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}", help="显示版本号后退出")
     args = parser.parse_args()
 
     if not os.path.isdir(PYDIR):
@@ -59,6 +61,8 @@ def main():
     if args.dpi < 72:
         raise SystemExit("--dpi 不能小于 72")
 
+    print(f"起点榜单流水线 v{VERSION}：采集={'是' if not args.skip_crawl else '否'}，"
+          f"页数={args.pages}，TOP={args.topn}，DPI={args.dpi}")
     started = time.time()
     if not args.skip_crawl:
         if not os.environ.get("QD_COOKIE", "").strip():
